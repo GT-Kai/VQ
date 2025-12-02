@@ -1,0 +1,10 @@
+torch>=2.0.0
+lightning>=2.0.0
+esm>=3.0.0
+numpy>=1.24.0
+tensorboard>=2.14.0
+swanlab>=0.3.0
+httpx>=0.24.0
+jsonargparse[signatures]>=4.27.7
+ipykernel==7.1.0
+kagglehub==0.3.13
