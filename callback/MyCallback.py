@@ -51,55 +51,77 @@ class SwanLabCallback(Callback):
         else:
             images_np = np.array(images)
         
-        # 确保数据类型为 float32
-        if images_np.dtype != np.float32:
-            images_np = images_np.astype(np.float32)
-        
         # 转换图像格式: (B, C, H, W) -> (B, H, W, C)
-        images_list = []
-        if len(images_np.shape) == 4 and (images_np.shape[1] == 3 or images_np.shape[1] == 1):  # (B, C, H, W)
-            for i in range(len(images_np)):
-                img = images_np[i].transpose(1, 2, 0)  # (C, H, W) -> (H, W, C)
-                # 确保值域在 [0, 1] 且为 float32
-                img = np.clip(img, 0.0, 1.0).astype(np.float32)
-                # 确保是连续的 numpy 数组（不是视图）
-                img = np.ascontiguousarray(img)
-                images_list.append(img)
-        elif len(images_np.shape) == 4 and images_np.shape[-1] in [1, 3]:  # 已经是 (B, H, W, C) 格式
-            for i in range(len(images_np)):
-                img = np.clip(images_np[i], 0.0, 1.0).astype(np.float32)
-                # 确保是连续的 numpy 数组（不是视图）
-                img = np.ascontiguousarray(img)
-                images_list.append(img)
-        else:
-            # 如果格式不对，尝试转换
-            for i in range(len(images_np)):
-                img = images_np[i]
-                # 如果是 torch.Tensor，转换为 numpy
-                if isinstance(img, torch.Tensor):
-                    img = img.cpu().detach().numpy()
-                # 确保是 numpy 数组
-                img = np.array(img, dtype=np.float32)
-                # 处理维度：如果是 (C, H, W)，转换为 (H, W, C)
-                if len(img.shape) == 3 and img.shape[0] in [1, 3]:
-                    img = img.transpose(1, 2, 0)
-                # 确保值域在 [0, 1]
-                img = np.clip(img, 0.0, 1.0).astype(np.float32)
-                # 确保是连续的 numpy 数组
-                img = np.ascontiguousarray(img)
-                images_list.append(img)
+        batch_size = images_np.shape[0]
+        swanlab_images = []
         
-        # 验证所有图像都是有效的 numpy 数组
-        for i, img in enumerate(images_list):
-            if not isinstance(img, np.ndarray):
-                raise TypeError(f"图像 {i} 不是 numpy 数组，而是 {type(img)}")
-            if img.dtype != np.float32:
-                images_list[i] = img.astype(np.float32)
-            if len(img.shape) not in [2, 3]:
-                raise ValueError(f"图像 {i} 的形状 {img.shape} 无效，应该是 (H, W) 或 (H, W, C)")
+        for i in range(batch_size):
+            img = images_np[i]
             
+            # 如果是 torch.Tensor，转换为 numpy
+            if isinstance(img, torch.Tensor):
+                img = img.cpu().detach().numpy()
+            
+            # 确保是 numpy 数组
+            img = np.array(img)
+            
+            # 处理不同的输入格式
+            if len(img.shape) == 4:
+                # 如果是 (1, C, H, W)，取第一个
+                img = img[0]
+            
+            if len(img.shape) == 3:
+                # (C, H, W) 格式，转换为 (H, W, C)
+                if img.shape[0] in [1, 3]:
+                    img = img.transpose(1, 2, 0)
+                # 如果已经是 (H, W, C) 格式，保持不变
+            elif len(img.shape) == 2:
+                # (H, W) 格式，转换为 (H, W, 3) RGB
+                img = np.stack([img, img, img], axis=-1)
+            
+            # 确保是 3 通道 RGB 格式
+            if len(img.shape) == 3:
+                if img.shape[2] == 1:
+                    # 单通道，复制为 3 通道
+                    img = np.repeat(img, 3, axis=2)
+                elif img.shape[2] != 3:
+                    # 如果不是 1 或 3 通道，取前 3 个通道或填充
+                    if img.shape[2] > 3:
+                        img = img[:, :, :3]
+                    else:
+                        # 填充到 3 通道
+                        padding = np.zeros((img.shape[0], img.shape[1], 3 - img.shape[2]), dtype=img.dtype)
+                        img = np.concatenate([img, padding], axis=2)
+            
+            # 确保值域在 [0, 1]
+            img = np.clip(img, 0.0, 1.0)
+            
+            # 转换为 [0, 255] 的 uint8 格式（SwanLab 要求）
+            if img.dtype != np.uint8:
+                # 如果值域已经是 [0, 1]，直接乘以 255
+                if img.max() <= 1.0:
+                    img = (img * 255).astype(np.uint8)
+                else:
+                    # 如果值域是 [0, 255]，直接转换类型
+                    img = img.astype(np.uint8)
+            
+            # 使用 swanlab.Image 封装图像
+            try:
+                swanlab_img = self.swanlab.Image(img)
+                swanlab_images.append(swanlab_img)
+            except Exception as e:
+                print(f"警告: 创建 swanlab.Image 失败 (图像 {i}): {e}")
+                print(f"  图像形状: {img.shape}, 数据类型: {img.dtype}")
+                # 如果 swanlab.Image 不可用，尝试直接使用 numpy 数组
+                swanlab_images.append(img)
+        
         # 记录到 SwanLab
-        self.swanlab.log({key: images_list}, step=step)
+        if len(swanlab_images) > 0:
+            try:
+                self.swanlab.log({key: swanlab_images}, step=step)
+            except Exception as e:
+                print(f"错误: 记录 {key} 到 SwanLab 失败: {e}")
+                raise
 
     
     def on_train_batch_end(
