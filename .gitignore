@@ -7,3 +7,4 @@ model/__pycache__/*
 checkpoints/*
 callback/MNIST/*
 callback/checkpoint/*
+bash/*
