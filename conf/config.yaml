@@ -18,6 +18,7 @@ trainer:
   # ddp_find_unused_parameters_false: 分布式数据并行策略，适用于多GPU训练，不启用find_unused_parameters参数
   # strategy: ddp  # 多GPU时取消注释
   max_epochs: 100
+  check_val_every_n_epoch: 1
   precision: 16-mixed  # 混合精度训练
   log_every_n_steps: 100
   enable_progress_bar: true
