@@ -168,12 +168,9 @@ class Decoder(nn.Module):
                 stage.append(ResBlock(in_ch, in_ch, norm_type, activation))
             
             # 上采样（使用最近邻插值 + 卷积）
-            if i < len(channel_multipliers) - 1:
-                stage.append(nn.Upsample(scale_factor=2, mode="nearest"))
-                stage.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1))
-            else:
-                # 最后一个 stage 不需要上采样
-                stage.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1))
+            # 所有 stage 都需要上采样以实现 16 → 32 → 64 → 128 → 256
+            stage.append(nn.Upsample(scale_factor=2, mode="nearest"))
+            stage.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1))
             
             self.stages.append(stage)
             in_ch = out_ch
@@ -192,14 +189,9 @@ class Decoder(nn.Module):
         
         # 4 个上采样 stage
         for stage in self.stages:
-            # ResBlocks
-            for i, module in enumerate(stage):
-                if isinstance(module, ResBlock):
-                    x = module(x)
-                elif isinstance(module, nn.Upsample):
-                    x = module(x)
-                elif isinstance(module, nn.Conv2d):
-                    x = module(x)
+            # 按顺序执行 stage 中的每个模块
+            for module in stage:
+                x = module(x)
         
         # 输出层
         x = self.conv_out(x)
@@ -380,12 +372,16 @@ class LPIPS(nn.Module):
         loss = 0.0
         weights = [0.1, 0.1, 1.0, 1.0]  # 不同层的权重
         
+        # 累积地通过每个 slice，保存中间特征
+        x_feat = x
+        y_feat = y
+        
         for i, (slice_fn, weight) in enumerate(zip(
             [self.slice1, self.slice2, self.slice3, self.slice4],
             weights
         )):
-            x_feat = slice_fn(x)
-            y_feat = slice_fn(y)
+            x_feat = slice_fn(x_feat)
+            y_feat = slice_fn(y_feat)
             
             # L2 距离
             loss += weight * F.mse_loss(x_feat, y_feat)

@@ -12,7 +12,7 @@ trainer:
   # 8: 使用8个GPU
   # [0, 1]: 使用第0和第1个GPU
   # [0, 1, 2, 3]: 使用第0, 1, 2, 3个GPU
-  devices: 1
+  devices: 2
   # ddp: 分布式数据并行策略，适用于多GPU训练
   # ddp_find_unused_parameters_true: 分布式数据并行策略，适用于多GPU训练，并启用find_unused_parameters参数
   # ddp_find_unused_parameters_false: 分布式数据并行策略，适用于多GPU训练，不启用find_unused_parameters参数
@@ -103,5 +103,4 @@ data:
     num_workers: 4  # 数据加载工作进程数
     val_split: 0.2  # 验证集比例 (20%)
     train_augment: true  # 是否使用数据增强
-    seed: 42  # 使用与seed_everything相同的值，确保数据划分的可重复性
 

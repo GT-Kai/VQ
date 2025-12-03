@@ -47,23 +47,60 @@ class SwanLabCallback(Callback):
         """将图像记录到 SwanLab"""
         # 确保图像在 CPU 上且为 numpy 格式
         if isinstance(images, torch.Tensor):
-            images_np = images.cpu().numpy()
+            images_np = images.cpu().detach().numpy()
         else:
-            images_np = images
+            images_np = np.array(images)
+        
+        # 确保数据类型为 float32
+        if images_np.dtype != np.float32:
+            images_np = images_np.astype(np.float32)
         
         # 转换图像格式: (B, C, H, W) -> (B, H, W, C)
-        if images_np.shape[1] == 3 or images_np.shape[1] == 1:  # (B, C, H, W)
-            images_list = []
+        images_list = []
+        if len(images_np.shape) == 4 and (images_np.shape[1] == 3 or images_np.shape[1] == 1):  # (B, C, H, W)
             for i in range(len(images_np)):
                 img = images_np[i].transpose(1, 2, 0)  # (C, H, W) -> (H, W, C)
-                # 确保值域在 [0, 1]
-                img = np.clip(img, 0, 1)
+                # 确保值域在 [0, 1] 且为 float32
+                img = np.clip(img, 0.0, 1.0).astype(np.float32)
+                # 确保是连续的 numpy 数组（不是视图）
+                img = np.ascontiguousarray(img)
                 images_list.append(img)
-        else:  # 已经是 (B, H, W, C) 格式
-            images_list = [np.clip(images_np[i], 0, 1) for i in range(len(images_np))]
+        elif len(images_np.shape) == 4 and images_np.shape[-1] in [1, 3]:  # 已经是 (B, H, W, C) 格式
+            for i in range(len(images_np)):
+                img = np.clip(images_np[i], 0.0, 1.0).astype(np.float32)
+                # 确保是连续的 numpy 数组（不是视图）
+                img = np.ascontiguousarray(img)
+                images_list.append(img)
+        else:
+            # 如果格式不对，尝试转换
+            for i in range(len(images_np)):
+                img = images_np[i]
+                # 如果是 torch.Tensor，转换为 numpy
+                if isinstance(img, torch.Tensor):
+                    img = img.cpu().detach().numpy()
+                # 确保是 numpy 数组
+                img = np.array(img, dtype=np.float32)
+                # 处理维度：如果是 (C, H, W)，转换为 (H, W, C)
+                if len(img.shape) == 3 and img.shape[0] in [1, 3]:
+                    img = img.transpose(1, 2, 0)
+                # 确保值域在 [0, 1]
+                img = np.clip(img, 0.0, 1.0).astype(np.float32)
+                # 确保是连续的 numpy 数组
+                img = np.ascontiguousarray(img)
+                images_list.append(img)
+        
+        # 验证所有图像都是有效的 numpy 数组
+        for i, img in enumerate(images_list):
+            if not isinstance(img, np.ndarray):
+                raise TypeError(f"图像 {i} 不是 numpy 数组，而是 {type(img)}")
+            if img.dtype != np.float32:
+                images_list[i] = img.astype(np.float32)
+            if len(img.shape) not in [2, 3]:
+                raise ValueError(f"图像 {i} 的形状 {img.shape} 无效，应该是 (H, W) 或 (H, W, C)")
             
         # 记录到 SwanLab
         self.swanlab.log({key: images_list}, step=step)
+
     
     def on_train_batch_end(
         self,
@@ -100,7 +137,7 @@ class SwanLabCallback(Callback):
             
             # 归一化到 [0, 1]
             images = (images + 1) / 2
-            images = torch.clamp(images, 0, 1)
+            images = torch.clamp(images, 0.0, 1.0)
             
             # 记录到 SwanLab
             self._log_images_to_swanlab(
@@ -145,33 +182,42 @@ class SwanLabCallback(Callback):
         if trainer.current_epoch % self.log_images_every_n_epochs == 0:
             # 获取验证数据
             if hasattr(trainer, "datamodule") and trainer.datamodule is not None:
-                val_loader = trainer.datamodule.val_dataloader()
-                if len(val_loader) > 0:
-                    batch = next(iter(val_loader))
-                    batch = batch.to(pl_module.device)
-                    
-                    pl_module.eval()
-                    with torch.no_grad():
-                        x_recon, _ = pl_module(batch)
-                    pl_module.train()
-                    
-                    # 选择前 n_samples 张图像
-                    n_samples = min(self.n_samples, batch.shape[0])
-                    images = torch.cat([
-                        batch[:n_samples],
-                        x_recon[:n_samples]
-                    ], dim=0)
-                    
-                    # 归一化到 [0, 1]
-                    images = (images + 1) / 2
-                    images = torch.clamp(images, 0, 1)
-                    
-                    # 记录到 SwanLab
-                    self._log_images_to_swanlab(
-                        images,
-                        key="val/reconstruction",
-                        step=trainer.global_step
-                    )
+                try:
+                    val_loader = trainer.datamodule.val_dataloader()
+                    if val_loader is not None and len(val_loader) > 0:
+                        batch = next(iter(val_loader))
+                        # 确保 batch 在正确的设备上
+                        if isinstance(batch, torch.Tensor):
+                            batch = batch.to(pl_module.device)
+                        elif isinstance(batch, (list, tuple)):
+                            batch = [b.to(pl_module.device) if isinstance(b, torch.Tensor) else b for b in batch]
+                            batch = batch[0] if len(batch) > 0 else None
+                        
+                        if batch is not None:
+                            pl_module.eval()
+                            with torch.no_grad():
+                                x_recon, _ = pl_module(batch)
+                            pl_module.train()
+                            
+                            # 选择前 n_samples 张图像
+                            n_samples = min(self.n_samples, batch.shape[0])
+                            images = torch.cat([
+                                batch[:n_samples],
+                                x_recon[:n_samples]
+                            ], dim=0)
+                            
+                            # 归一化到 [0, 1]
+                            images = (images + 1) / 2
+                            images = torch.clamp(images, 0.0, 1.0)
+                            
+                            # 记录到 SwanLab
+                            self._log_images_to_swanlab(
+                                images,
+                                key="val/reconstruction",
+                                step=trainer.global_step
+                            )
+                except Exception as e:
+                    print(f"警告: 验证 epoch 结束时记录图像失败: {e}")
     
     def on_test_batch_end(
         self,
@@ -198,32 +244,41 @@ class SwanLabCallback(Callback):
         
         # 获取测试数据
         if hasattr(trainer, "datamodule") and trainer.datamodule is not None:
-            test_loader = trainer.datamodule.test_dataloader()
-            if len(test_loader) > 0:
-                batch = next(iter(test_loader))
-                batch = batch.to(pl_module.device)
-                
-                pl_module.eval()
-                with torch.no_grad():
-                    x_recon, _ = pl_module(batch)
-                
-                # 选择前 n_samples 张图像
-                n_samples = min(self.n_samples, batch.shape[0])
-                images = torch.cat([
-                    batch[:n_samples],
-                    x_recon[:n_samples]
-                ], dim=0)
-                
-                # 归一化到 [0, 1]
-                images = (images + 1) / 2
-                images = torch.clamp(images, 0, 1)
-                
-                # 记录到 SwanLab
-                self._log_images_to_swanlab(
-                    images,
-                    key="test/reconstruction",
-                    step=trainer.global_step
-                )
+            try:
+                test_loader = trainer.datamodule.test_dataloader()
+                if test_loader is not None and len(test_loader) > 0:
+                    batch = next(iter(test_loader))
+                    # 确保 batch 在正确的设备上
+                    if isinstance(batch, torch.Tensor):
+                        batch = batch.to(pl_module.device)
+                    elif isinstance(batch, (list, tuple)):
+                        batch = [b.to(pl_module.device) if isinstance(b, torch.Tensor) else b for b in batch]
+                        batch = batch[0] if len(batch) > 0 else None
+                    
+                    if batch is not None:
+                        pl_module.eval()
+                        with torch.no_grad():
+                            x_recon, _ = pl_module(batch)
+                        
+                        # 选择前 n_samples 张图像
+                        n_samples = min(self.n_samples, batch.shape[0])
+                        images = torch.cat([
+                            batch[:n_samples],
+                            x_recon[:n_samples]
+                        ], dim=0)
+                        
+                        # 归一化到 [0, 1]
+                        images = (images + 1) / 2
+                        images = torch.clamp(images, 0.0, 1.0)
+                        
+                        # 记录到 SwanLab
+                        self._log_images_to_swanlab(
+                            images,
+                            key="test/reconstruction",
+                            step=trainer.global_step
+                        )
+            except Exception as e:
+                print(f"警告: 测试 epoch 结束时记录图像失败: {e}")
     
     def on_train_start(
         self,
