@@ -5,3 +5,5 @@ callback/__pycache__/*
 dataloader/__pycache__/*
 model/__pycache__/*
 checkpoints/*
+callback/MNIST/*
+callback/checkpoint/*

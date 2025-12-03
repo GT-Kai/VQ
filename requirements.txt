@@ -10,3 +10,4 @@ httpx>=0.24.0
 jsonargparse[signatures]>=4.27.7
 ipykernel==7.1.0
 kagglehub==0.3.13
+matplotlib==3.10.7
