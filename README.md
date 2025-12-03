@@ -1,344 +1,398 @@
-## README (English) — Anime Avatar VQ-VAE / VQ-GAN Plan
+# VQ-VAE Anime Avatar Training Project
+
+This project implements a VQ-VAE / VQ-GAN model using PyTorch Lightning for learning discrete latent space representations of anime avatars.
+
+## 📋 Table of Contents
+
+- [Environment Setup](#-environment-setup)
+- [Dataset Preparation](#-dataset-preparation)
+- [Project Structure](#-project-structure)
+- [Configuration File](#-configuration-file)
+- [Training Steps](#-training-steps)
+- [Validation and Testing](#-validation-and-testing)
+- [Common Issues](#-common-issues)
 
 ---
 
-## 0. Project environment setup
+## 🚀 Environment Setup
+
+### 1. Create Conda Environment
 
 ```bash
+# Create Python 3.10 environment
 conda create -n VQ python=3.10
+conda activate VQ
+```
+
+### 2. Install Dependencies
+
+```bash
+# Install project dependencies
 pip install -r requirements.txt
 ```
 
-## 1. Overview
-
-This document describes a **technical plan** for training a VQ-VAE (optionally extendable to VQ-GAN) on ~10,000 anime avatar images with resolution **256×256** using a single **RTX 4090** GPU and **PyTorch Lightning**.
-
-**Main goals**:
-
-- Learn a high-quality **discrete latent space** (codebook) specialized for anime faces  
-- Achieve strong **reconstruction quality** and **diverse generation**  
-- Keep the design **simple, stable, and extensible** (easy to add GAN loss or a prior over codes later)
+Main dependencies include:
+- PyTorch >= 2.0.0
+- PyTorch Lightning >= 2.0.0
+- SwanLab (experiment logging)
+- Other dependencies see `requirements.txt`
 
 ---
 
-## 2. Recommended Project Structure
+## 📦 Dataset Preparation
 
-```text
-project/
-  configs/
-    vqvae_anime.yaml          # hyper-parameters
-  data/
-    raw/                      # raw images
-    processed/                # optional preprocessed images
-  src/
-    datamodules/
-      anime_datamodule.py     # LightningDataModule
-    models/
-      vqvae_module.py         # LightningModule (VQ-VAE / VQ-GAN)
-      modules/
-        encoder.py
-        decoder.py
-        quantizer_ema.py
-        discriminator.py      # optional, for VQ-GAN
-    utils/
-      losses.py               # reconstruction, perceptual, GAN losses
-      metrics.py              # FID, LPIPS evaluation
-  scripts/
-    train_vqvae.sh
-  README_zh.md
-  README_en.md
+### Dataset Format
+
+The project supports loading images directly from a directory with the following requirements:
+
+- **Image format**: `.png` or `.jpg`
+- **Resolution**: Recommended 256×256 (the program will automatically resize)
+- **Directory structure**:
+
+```
+datas/
+  your_dataset/
+    image1.png
+    image2.jpg
+    ...
+```
+
+### Dataset Configuration
+
+Modify the dataset path in `conf/config.yaml`:
+
+```yaml
+data:
+  class_path: dataloader.dataModule.AnimeDataModule
+  init_args:
+    data_dir: /path/to/your/dataset  # Change to your dataset path
+    image_size: 256
+    batch_size: 32
+    num_workers: 4
+    val_split: 0.2  # Validation set ratio (20%)
+    train_augment: true  # Enable data augmentation
+```
+
+### Example Dataset
+
+Example dataset path used in the project configuration (Kaggle):
+```yaml
+data_dir: /home/lick/project/VQ/datas/soumikrakshit/anime-faces/versions/1/data
 ```
 
 ---
 
-## 3. Model Architecture Design
+## 📁 Project Structure
 
-### 3.1 Encoder
-
-- **Backbone**: ResNet-style convolutional encoder.
-- **Input**: `3 × 256 × 256` RGB image normalized to `[-1, 1]`.
-- **Downsampling schedule** (total factor = 16):
-  - `256 → 128 → 64 → 32 → 16` (4 stages, each 2×)
-- **Channel plan** (example):
-  - Level 1 (256→128): 128 channels
-  - Level 2 (128→64): 256 channels
-  - Level 3 (64→32): 256 channels
-  - Level 4 (32→16): 256 channels
-- **Block design per level**:
-  - `Conv (stride 2, kernel 4 or 3, padding 1)` for downsampling
-  - 2–3 residual blocks with:
-    - Conv 3×3 → GroupNorm / BatchNorm → nonlinearity (ReLU/SiLU)
-    - Optional attention block at 32×32 or 16×16 (if you want more capacity)
-- **Latent channels**:
-  - `C_latent = 256` (good default)
-  - For higher fidelity (larger model + more VRAM): `C_latent = 384`
-- **Encoder output**:
-  - Feature map: `C_latent × 16 × 16`
-
-### 3.2 Decoder
-
-- **Symmetric structure** to encoder, but with upsampling:
-  - `16 → 32 → 64 → 128 → 256`
-- Each upsampling stage:
-  - Nearest-neighbor or bilinear upsample ×2
-  - Conv 3×3 + residual blocks (mirroring encoder)
-- Channels (reverse of encoder):
-  - Start from `C_latent` (256 or 384)
-  - Gradually reduce to 64 near 256×256 resolution
-- Final layer:
-  - Conv 3×3 → `3` channels → `tanh` activation → output in `[-1, 1]`
-
-### 3.3 Vector Quantizer / Codebook
-
-- Use **EMA-based vector quantization** (as in VQ-VAE v2 / VQ-GAN) for stability:
-  - EMA decay: `ema_decay = 0.99 – 0.999`
-  - Small epsilon for cluster size: `eps = 1e-5`
-- Latent grid:
-  - Size: `H_lat × W_lat = 16 × 16`
-  - At each spatial position, we map encoder output vector to closest code vector.
-- Quantizer interface (conceptual):
-  - Input: `z_e ∈ ℝ^{B × C_latent × 16 × 16}`
-  - Output: `z_q` (quantized features, same shape) and `indices ∈ ℕ^{B × 16 × 16}`
+```
+VQ/
+├── main.py                 # Training main program (LightningCLI)
+├── conf/
+│   └── config.yaml        # Configuration file (model, training, data parameters)
+├── model/
+│   └── modelModule.py     # VQ-VAE model definition
+├── dataloader/
+│   └── dataModule.py      # Data loading module
+├── callback/
+│   └── MyCallback.py      # Custom callbacks (logging, visualization)
+├── bash/
+│   └── run.sh             # Training script example
+├── checkpoints/           # Model checkpoint save directory
+├── requirements.txt       # Python dependencies
+└── README.md             # This file
+```
 
 ---
 
-## 4. Codebook Design
+## ⚙️ Configuration File
 
-### 4.1 Codebook Size & Embedding Dimension
+The configuration file is located at `conf/config.yaml` and mainly contains three parts:
 
-Given:
+### 1. Trainer Configuration
 
-- Dataset: ~10k images  
-- Resolution: 256×256  
-- Latent resolution: 16×16 (256 tokens per image)
+```yaml
+trainer:
+  accelerator: gpu         # Use GPU
+  devices: 1              # Number of GPUs
+  max_epochs: 100         # Maximum training epochs
+  precision: 16-mixed     # Mixed precision training
+  gradient_clip_val: 1.0  # Gradient clipping
+  accumulate_grad_batches: 1  # Gradient accumulation steps
+```
 
-**Recommended configuration**:
+**Multi-GPU Training**:
+- Set `devices: 2` to use 2 GPUs
+- Uncomment `strategy: ddp` to enable distributed training
 
-- **Embedding dimension** `D_e`:
-  - `D_e = 256`, matching `C_latent`
-  - If `C_latent = 384`, either:
-    - Project `384 → 256` before quantizer, or
-    - Use `D_e = 384` and keep codebook that size (more expensive)
-- **Number of codes** `K`:
-  - Start with **`K = 1024`**
-  - If reconstructions are smooth and code usage appears saturated, consider **`K = 2048`**
-  - Avoid excessively large `K` (e.g. 8k+) for this data size to prevent many dead codes.
+### 2. Model Configuration
 
-### 4.2 Initialization Strategy
+```yaml
+model:
+  class_path: model.modelModule.VQVAEModel
+  init_args:
+    # Model structure
+    latent_channels: 256           # Latent variable channels
+    encoder_channels: [128, 256, 256, 256]
+    decoder_channels: [256, 256, 256, 128]
+    
+    # Quantizer parameters
+    num_embeddings: 1024          # Codebook size
+    embedding_dim: 256            # Embedding dimension
+    
+    # Loss weights
+    lambda_rec: 1.0               # Reconstruction loss
+    lambda_vq: 1.0                # VQ loss
+    lambda_commit: 0.25           # Commitment loss
+    lambda_perc: 0.5              # Perceptual loss (LPIPS)
+    lambda_gan: 0.0               # GAN loss (VQ-GAN extension)
+    
+    # Optimizer
+    learning_rate: 2.0e-4
+    betas: [0.9, 0.99]
+```
 
-- **Codebook weights**:
-  - Use standard PyTorch initialization (e.g. Kaiming uniform) or:
-  - Explicitly set `N(0, 0.1)` for code vectors.
-- **Optional k-means init** (advanced, optional):
-  - Run encoder on a subset (e.g. 5k images) without quantization.
-  - Collect a large number of latent vectors (`z_e`) and run k-means with `K` clusters.
-  - Initialize codebook with these centroids.
-- **EMA stats**:
-  - Initialize counts to small positives to avoid division by zero.
+### 3. Data Configuration
 
-### 4.3 Monitoring & Regularization
-
-- Track:
-  - Code usage histogram over dataset
-  - Per-batch and moving-average perplexity
-- If many codes are essentially unused:
-  - Try **smaller K** (e.g. 512 or 768), or
-  - Implement **codebook reset**:
-    - Periodically reinitialize rarely used vectors to new encoder latents with high reconstruction error.
-
----
-
-## 5. Loss Functions and Weights
-
-We combine reconstruction, codebook, commitment, and perceptual losses; GAN loss is optional.
-
-Overall loss:
-
-\\[
-L = \\lambda_{rec} L_{rec} + \\lambda_{vq} L_{vq} + \\lambda_{commit} L_{commit} + \\lambda_{perc} L_{perc} + \\lambda_{gan} L_{gan}
-\\]
-
-### 5.1 Reconstruction Loss
-
-- Use pixel-wise `L1` (often sharper than `L2`):
-  - `L_rec = mean(|x - x_recon|)`
-- Optionally mix with `L2` (small weight) if optimization is noisy.
-- **Weight**:
-  - `λ_rec = 1.0` (base scale; others relative to this)
-
-### 5.2 VQ Codebook & Commitment Loss
-
-- Standard VQ-VAE form:
-  - `L_vq = ||sg[z_e] - e||_2^2` (move embeddings towards encoder outputs)
-  - `L_commit = ||z_e - sg[e]||_2^2` (prevent encoder outputs from drifting too far)
-- **Weights**:
-  - `λ_vq = 1.0`
-  - `λ_commit = 0.25 – 0.5` (start with `0.25`; if codes underused, increase)
-
-### 5.3 Perceptual Loss (LPIPS)
-
-- Use **LPIPS** with a VGG-based backbone.
-- Compute between input and reconstruction:
-  - `L_perc = LPIPS(x, x_recon)`
-- **Weight**:
-  - Start with `λ_perc = 0.5`
-  - If reconstructions are too blurry, increase to `1.0`
-
-### 5.4 Optional GAN Loss (VQ-GAN Extension)
-
-When extending to VQ-GAN:
-
-- Add a **PatchGAN** discriminator operating on 256×256 images.
-- Loss choice:
-  - Hinge GAN or non-saturating GAN with logits.
-- **Weights**:
-  - Start small: `λ_gan = 0.1`
-  - Warm up: first train with `λ_gan = 0` for some steps (e.g. 20k), then linearly ramp `0 → 0.1` over another 20k steps.
+```yaml
+data:
+  class_path: dataloader.dataModule.AnimeDataModule
+  init_args:
+    data_dir: /path/to/dataset
+    batch_size: 32
+    image_size: 256
+    val_split: 0.2
+    train_augment: true
+```
 
 ---
 
-## 6. Training Strategy
+## 🏃 Training Steps
 
-### 6.1 Data & Preprocessing
+### 1. Verify Configuration
 
-- **Dataset**:
-  - ~10k anime avatars, ensure consistent framing (head/shoulders).
-- **Preprocessing**:
-  - Convert to RGB, pad or center-crop to square, then resize to 256×256.
-  - Normalize to `[-1, 1]` (i.e. `(x / 127.5) - 1.0`).
-- **Augmentations**:
-  - Horizontal flip (p=0.5).
-  - Light color jitter (brightness/contrast/saturation small, e.g. 0.1–0.2).
-  - Avoid strong rotations or large crops so facial structure remains stable.
+Before starting training, verify that the configuration file is correct:
 
-### 6.2 Batch Size, Steps, and Epochs
+```bash
+python main.py fit --config conf/config.yaml --print_config
+```
 
-- Hardware: single RTX 4090 (24 GB).
-- **Batch size**:
-  - Target `batch_size = 32` for 256×256; if OOM, use:
-    - `batch_size = 16` with gradient accumulation 2 steps (effective 32).
-- **Training length**:
-  - ~`100k – 200k` optimizer steps is a good starting range.
-  - With batch 32 and 10k images, this is ~320–640 epochs equivalent; monitor validation to avoid severe overfitting.
+This will print the complete configuration information, including all parameters.
 
-### 6.3 Optimizer and Learning Rate
+### 2. Quick Test Run
 
-- Optimizer: `Adam` or `AdamW`.
-  - `lr = 2e-4` for encoder, decoder, and quantizer.
-  - `betas = (0.9, 0.99)`
-  - `weight_decay = 0.0 – 1e-4` (0 when starting is fine).
-- If using VQ-GAN:
-  - Separate optimizer for discriminator:
-    - `lr = 2e-4`, `betas = (0.5, 0.99)` or `(0.9, 0.99)`.
+Use `fast_dev_run` mode to quickly verify that the code can run normally:
 
-### 6.4 LR Schedule & Warmup
+```bash
+CUDA_VISIBLE_DEVICES=1 python main.py fit --config conf/config.yaml --trainer.fast_dev_run=true
+```
 
-- **Warmup**:
-  - Linear warmup from `1e-6` to `2e-4` over first `2k – 5k` steps.
-- **After warmup**:
-  - Cosine decay from `2e-4` to `1e-5` over remaining steps; or
-  - Step LR: reduce ×0.5 after plateau on validation loss.
-- Implement schedule via PyTorch Lightning `lr_scheduler` interface.
+### 3. Start Training
 
-### 6.5 PyTorch Lightning Configuration
+Using the provided script:
 
-- **Precision**: use `precision=16` (mixed precision) to save memory and speed up.
-- **Gradient clipping**:
-  - `gradient_clip_val = 1.0`.
-- **Checkpointing**:
-  - Save:
-    - Best model by validation reconstruction loss and/or LPIPS.
-    - Periodic checkpoints every N steps (e.g. 10k) for inspection.
-- **Logging**:
-  - Log:
-    - Loss breakdown (`L_rec`, `L_vq`, `L_commit`, `L_perc`, `L_gan`).
-    - Code usage histogram/perplexity.
-    - Example reconstructions every few hundred steps.
+```bash
+cd bash
+bash run.sh
+```
+
+Or run directly:
+
+```bash
+python main.py fit --config conf/config.yaml
+```
+
+### 4. Resume Training from Checkpoint
+
+If training is interrupted, you can resume from the last saved checkpoint:
+
+```bash
+python main.py fit --config conf/config.yaml --ckpt_path checkpoints/last.ckpt
+```
+
+### 5. Use Specific GPU
+
+Specify GPU via environment variable:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python main.py fit --config conf/config.yaml
+```
 
 ---
 
-## 7. Common Issues & Mitigation
+## 🔍 Validation and Testing
 
-### 7.1 Codebook Underuse / Posterior Collapse
+### Validation Mode
 
-- **Symptoms**:
-  - Only a few codes dominate usage.
-  - Reconstructions look overly smooth, diversity limited.
-- **Solutions**:
-  - Increase `λ_commit` (e.g. from 0.25 to 0.5).
-  - Reduce `K` (e.g. 1024 → 512).
-  - Check LR (too high LR can destabilize EMA updates).
-  - Apply codebook reset on dead codes.
+Evaluate the model using the validation set:
 
-### 7.2 Training Instability (Especially with GAN)
+```bash
+python main.py validate --config conf/config.yaml --ckpt_path checkpoints/best.ckpt
+```
 
-- Start without GAN loss:
-  - Train pure VQ-VAE until reconstructions are acceptable.
-- When enabling GAN:
-  - Warm up `λ_gan` slowly.
-  - Optionally lower discriminator LR compared to generator.
-  - Use spectral normalization or gradient penalty if discriminator collapses.
+### Test Mode
 
-### 7.3 Blurry or Overly Smooth Reconstructions
-
-- Increase `λ_perc` (e.g. 0.5 → 1.0).
-- Increase model capacity:
-  - More residual blocks, slightly larger `C_latent`.
-- Increase codebook size:
-  - `K: 1024 → 2048` (watch code usage).
-
-### 7.4 Overfitting on 10k Images
-
-- Use moderate augmentations (flip, small color jitter).
-- Keep an explicit validation split (e.g. 8k train / 2k val).
-- Add early stopping patience on validation reconstruction loss or LPIPS.
+```bash
+python main.py test --config conf/config.yaml --ckpt_path checkpoints/best.ckpt
+```
 
 ---
 
-## 8. Implementation Tasks (Checklist)
+## 📊 Monitoring and Logging
 
-### 8.1 Data & Config
+### SwanLab Logging
 
-- [ ] Prepare anime avatar dataset (~10k images, 256×256).
-- [ ] Implement preprocessing and augmentation pipeline.
-- [ ] Create `configs/vqvae_anime.yaml` including:
-  - Model architecture (channels, K, D_e, resolutions).
-  - Loss weights (λ_rec, λ_vq, λ_commit, λ_perc, λ_gan).
-  - Optimizer and LR schedule.
-  - Training hyperparameters (batch size, steps, precision).
+The project integrates SwanLab for experiment tracking, including:
 
-### 8.2 Core Model (PyTorch Lightning)
+- Training/validation loss curves
+- Reconstructed image visualization
+- Codebook usage statistics
+- Hyperparameter records
 
-- [ ] Implement `AnimeDataModule` (`anime_datamodule.py`):
-  - Train/val splits, transforms, DataLoader settings.
-- [ ] Implement `Encoder` (`encoder.py`) and `Decoder` (`decoder.py`).
-- [ ] Implement EMA-based `VectorQuantizerEMA` (`quantizer_ema.py`).
-- [ ] Implement `VQVAEModel` (`vqvae_module.py`) as `LightningModule`:
-  - Forward pass (encode → quantize → decode).
-  - Compute all losses and log them.
-  - Log reconstructions and code usage stats.
-- [ ] (Optional) Implement `Discriminator` (`discriminator.py`) and GAN loss for VQ-GAN.
+After training starts, SwanLab will automatically log. You can modify the project name and experiment name in the configuration file:
 
-### 8.3 Training & Evaluation
+```yaml
+trainer:
+  logger:
+    - class_path: swanlab.integration.pytorch_lightning.SwanLabLogger
+      init_args:
+        project: vq-vae-anime
+        experiment_name: vqvae-baseline
+```
 
-- [ ] Write `scripts/train_vqvae.sh` to launch training from config.
-- [ ] Implement metrics in `metrics.py` (FID, LPIPS).
-- [ ] Implement sampling utilities:
-  - Random sampling from codebook (optional on top of simple uniform codes).
-  - Reconstruction of given images.
+### Checkpoint Saving
 
-### 8.4 Experiment Management
+Model checkpoints are saved in the `checkpoints/` directory:
 
-- [ ] Set up logging (TensorBoard or WandB).
-- [ ] Configure model checkpointing and early stopping.
-- [ ] Document main experiments and hyperparameter choices.
+- `vqvae-{epoch}-{loss}.ckpt`: Best model saved by validation loss
+- `last.ckpt`: Last training checkpoint
+
+Configuration notes:
+- `save_top_k: 3`: Keep the top 3 best models
+- `every_n_train_steps: 10000`: Save every 10000 steps
 
 ---
 
-## 9. Suggested Next Steps
+## ❓ Common Issues
 
-- **Phase 1**: Train a stable VQ-VAE with reconstruction + LPIPS only.
-- **Phase 2**: Add GAN discriminator to move towards VQ-GAN, if sharper outputs are needed.
-- **Phase 3** (optional): Train an autoregressive or transformer prior over discrete codes for unconditional or conditional generation.
+### 1. Out of Memory (OOM)
 
+**Solution**:
+- Reduce `batch_size` (e.g., from 32 to 16)
+- Use gradient accumulation: `accumulate_grad_batches: 2`
+- Ensure mixed precision is used: `precision: 16-mixed`
 
+### 2. Dataset Path Error
+
+**Error message**: `No image files found in {data_dir}`
+
+**Solution**:
+- Check if the `data_dir` path in `conf/config.yaml` is correct
+- Ensure the directory contains `.png` or `.jpg` files
+
+### 3. Codebook Underuse
+
+**Symptoms**: Only a few codes are used, reconstructed images are blurry
+
+**Solution**:
+- Increase `lambda_commit` (e.g., from 0.25 to 0.5)
+- Reduce `num_embeddings` (e.g., from 1024 to 512)
+- Check if the learning rate is too high
+
+### 4. Blurry Reconstructed Images
+
+**Solution**:
+- Increase perceptual loss weight: `lambda_perc: 1.0`
+- Increase codebook size: `num_embeddings: 2048`
+- Increase model capacity (more ResBlocks or larger channel numbers)
+
+### 5. Training Instability
+
+**Solution**:
+- Lower learning rate: `learning_rate: 1.0e-4`
+- Enable gradient clipping: `gradient_clip_val: 1.0`
+- Check if data augmentation is too aggressive
+
+### 6. Checkpoint Loading Failure
+
+**Solution**:
+- Ensure the checkpoint file path is correct
+- Check if the model configuration matches the training configuration
+- Use the `--ckpt_path` parameter to specify the full path
+
+---
+
+## 🔧 Advanced Configuration
+
+### Multi-GPU Training
+
+Configure in `conf/config.yaml`:
+
+```yaml
+trainer:
+  accelerator: gpu
+  devices: 2              # Use 2 GPUs
+  strategy: ddp           # Enable distributed training
+```
+
+Note: `batch_size` is the batch size per GPU, total batch size = `batch_size × num_gpus`.
+
+### Custom Data Augmentation
+
+Modify the `_get_train_transform()` method in `dataloader/dataModule.py` to customize data augmentation.
+
+### Adjust Loss Weights
+
+Adjust loss weights in `conf/config.yaml` based on training results:
+
+- `lambda_rec`: Reconstruction loss (default 1.0)
+- `lambda_vq`: VQ loss (default 1.0)
+- `lambda_commit`: Commitment loss (default 0.25)
+- `lambda_perc`: Perceptual loss (default 0.5)
+
+---
+
+## 📝 Training Recommendations
+
+### Recommended Training Process
+
+1. **Phase 1: Basic Training**
+   - Start training with default configuration
+   - Monitor validation loss and reconstruction quality
+   - Train until reconstruction results stabilize
+
+2. **Phase 2: Fine-tuning**
+   - Adjust loss weights based on reconstruction quality
+   - If images are blurry, increase `lambda_perc`
+   - If code usage is insufficient, adjust `lambda_commit`
+
+3. **Phase 3: Extension (Optional)**
+   - Enable GAN loss to extend to VQ-GAN
+   - Gradually increase `lambda_gan` (from 0 to 0.1)
+
+### Training Time Estimation
+
+- Dataset: ~10k images
+- Batch size: 32
+- Steps per epoch: ~320
+- Recommended training: 100-200k steps (approximately 320-640 epochs)
+
+---
+
+## 📚 Related Documentation
+
+- `conf/README.md`: Detailed configuration file documentation
+- `model/README.md`: Model architecture documentation
+- `dataloader/README.md`: Data loading documentation
+- `callback/README.md`: Callback function documentation
+
+---
+
+## 📄 License
+
+This project is for learning and research purposes only.
+
+---
+
+## 🤝 Contributing
+
+Welcome to submit Issues and Pull Requests!

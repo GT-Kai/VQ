@@ -1,2 +1,6 @@
 datas/soumikrakshit/anime-faces/*
 .vscode/*
+__pycache__/*
+callback/__pycache__/*
+dataloader/__pycache__/*
+model/__pycache__/*

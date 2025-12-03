@@ -1,0 +1,107 @@
+# Configuration file for VQ-VAE training using LightningCLI
+# Usage: python main.py fit --config conf/config.yaml
+
+seed_everything: 42  # Set global random seed for reproducibility
+
+# Trainer configuration
+trainer:
+  accelerator: gpu
+  # auto: 自动使用所有可用GPU
+  # 2: 使用2个GPU
+  # 4: 使用4个GPU
+  # 8: 使用8个GPU
+  # [0, 1]: 使用第0和第1个GPU
+  # [0, 1, 2, 3]: 使用第0, 1, 2, 3个GPU
+  devices: 1
+  # ddp: 分布式数据并行策略，适用于多GPU训练
+  # ddp_find_unused_parameters_true: 分布式数据并行策略，适用于多GPU训练，并启用find_unused_parameters参数
+  # ddp_find_unused_parameters_false: 分布式数据并行策略，适用于多GPU训练，不启用find_unused_parameters参数
+  # strategy: ddp  # 多GPU时取消注释
+  max_epochs: 100
+  precision: 16-mixed  # 混合精度训练
+  log_every_n_steps: 100
+  enable_progress_bar: true
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: checkpoints/
+        filename: vqvae-{epoch:02d}-{val/total_loss:.4f}
+        monitor: val/total_loss
+        mode: min
+        save_top_k: 3
+        save_last: true
+        every_n_train_steps: 10000
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val/total_loss
+        patience: 10
+        mode: min
+        verbose: true
+        min_delta: 0.0
+    - class_path: callback.MyCallback.SwanLabCallback
+      init_args:
+        log_images_every_n_steps: 500
+        log_images_every_n_epochs: 1
+        n_samples: 8
+  logger:
+    - class_path: swanlab.integration.pytorch_lightning.SwanLabLogger
+      init_args:
+        project: vq-vae-anime
+        experiment_name: vqvae-baseline
+        description: VQ-VAE baseline experiment on anime faces
+        config:
+          tags:
+            - vqvae
+            - anime
+            - baseline
+
+# Model configuration
+model:
+  class_path: model.modelModule.VQVAEModel
+  init_args:
+    # 模型结构参数
+    in_channels: 3
+    latent_channels: 256
+    encoder_channels: [128, 256, 256, 256]  # Encoder 各 stage 通道数
+    decoder_channels: [256, 256, 256, 128]  # Decoder 各 stage 通道数
+    num_res_blocks: 2  # 每个 stage 的 ResBlock 数量
+    
+    # 量化器参数
+    num_embeddings: 1024  # Codebook 大小 (K)
+    embedding_dim: 256    # Embedding 维度 (D_e)
+    commitment_cost: 0.25 # Commitment 损失权重
+    decay: 0.99           # EMA 衰减系数
+    
+    # 损失权重
+    lambda_rec: 1.0      # 重建损失权重
+    lambda_vq: 1.0       # VQ 损失权重
+    lambda_commit: 0.25  # Commitment 损失权重
+    lambda_perc: 0.5     # 感知损失权重 (LPIPS)
+    lambda_gan: 0.0      # GAN 损失权重 (VQ-GAN 扩展，默认关闭)
+    
+    # 其他参数
+    use_lpips: true  # 是否使用 LPIPS 感知损失
+    
+    # 优化器参数
+    learning_rate: 2.0e-4
+    betas: [0.9, 0.99]  # Adam 优化器 betas
+    weight_decay: 0.0
+    
+    # 日志参数
+    log_every_n_steps: 100
+    log_images_every_n_steps: 500  # 注意：图像记录已移至 callback
+
+# Data configuration
+data:
+  class_path: dataloader.dataModule.AnimeDataModule
+  init_args:
+    data_dir: /home/lick/project/VQ/datas/soumikrakshit/anime-faces/versions/1/data
+    image_size: 256
+    batch_size: 32  # 每个GPU的batch size，多GPU训练时总batch size = batch_size * num_gpus
+    num_workers: 4  # 数据加载工作进程数
+    val_split: 0.2  # 验证集比例 (20%)
+    train_augment: true  # 是否使用数据增强
+    seed: 42  # 使用与seed_everything相同的值，确保数据划分的可重复性
+
