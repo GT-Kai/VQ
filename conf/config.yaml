@@ -12,7 +12,7 @@ trainer:
   # 8: 使用8个GPU
   # [0, 1]: 使用第0和第1个GPU
   # [0, 1, 2, 3]: 使用第0, 1, 2, 3个GPU
-  devices: 2
+  devices: 1
   # ddp: 分布式数据并行策略，适用于多GPU训练
   # ddp_find_unused_parameters_true: 分布式数据并行策略，适用于多GPU训练，并启用find_unused_parameters参数
   # ddp_find_unused_parameters_false: 分布式数据并行策略，适用于多GPU训练，不启用find_unused_parameters参数
@@ -99,7 +99,7 @@ data:
   init_args:
     data_dir: /home/lick/project/VQ/datas/soumikrakshit/anime-faces/versions/1/data
     image_size: 256
-    batch_size: 32  # 每个GPU的batch size，多GPU训练时总batch size = batch_size * num_gpus
+    batch_size: 16  # 每个GPU的batch size，多GPU训练时总batch size = batch_size * num_gpus
     num_workers: 4  # 数据加载工作进程数
     val_split: 0.2  # 验证集比例 (20%)
     train_augment: true  # 是否使用数据增强
