@@ -100,7 +100,7 @@ data:
   init_args:
     data_dir: /home/lick/project/VQ/datas/soumikrakshit/anime-faces/versions/1/data
     image_size: 256
-    batch_size: 16  # 每个GPU的batch size，多GPU训练时总batch size = batch_size * num_gpus
+    batch_size: 8  # 每个GPU的batch size，多GPU训练时总batch size = batch_size * num_gpus
     num_workers: 4  # 数据加载工作进程数
     val_split: 0.2  # 验证集比例 (20%)
     train_augment: true  # 是否使用数据增强
