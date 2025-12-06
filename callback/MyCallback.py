@@ -3,6 +3,7 @@
 import torch
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Callback
+import gc
 
 import matplotlib.pyplot as plt
 
@@ -31,6 +32,8 @@ class SwanLabCallback(Callback):
         project: str = "vq-vae-anime",
         experiment_name: str = "vqvae-baseline",
         description: str = "VQ-VAE baseline experiment on anime faces",
+        enabled: bool = True,
+        mode: str = "cloud",
     ):
         """
         Args:
@@ -40,11 +43,15 @@ class SwanLabCallback(Callback):
             project: SwanLab 项目名称
             experiment_name: SwanLab 实验名称
             description: SwanLab 实验描述
+            enabled: 是否启用 SwanLab（False 可完全禁用）
+            mode: SwanLab 模式 - "cloud" 上传到云端，"local" 只保存本地
         """
         super().__init__()
         self.log_images_every_n_steps = log_images_every_n_steps
         self.log_images_every_n_epochs = log_images_every_n_epochs
         self.n_samples = n_samples
+        self.enabled = enabled
+        self.mode = mode
         
         # SwanLab 配置
         self.project = project
@@ -52,11 +59,14 @@ class SwanLabCallback(Callback):
         self.description = description
         
         self.swanlab = swanlab
-        self.swanlab_available = SWANLAB_AVAILABLE
+        self.swanlab_available = SWANLAB_AVAILABLE and self.enabled
         self.swanlab_initialized = False
 
         if not self.swanlab_available:
-            print("[SwanLabCallback] 未检测到 swanlab 包，图像记录将被跳过。")
+            if not self.enabled:
+                print("[SwanLabCallback] SwanLab 已禁用。")
+            else:
+                print("[SwanLabCallback] 未检测到 swanlab 包，图像记录将被跳过。")
 
     # ------------------------------------------------------------------
     # 工具：初始化 SwanLab（仅一次）
@@ -70,20 +80,48 @@ class SwanLabCallback(Callback):
             return
         
         try:
-            # 检查是否已有活跃的 swanlab run
-            # 如果没有，则初始化一个新的
-            if not hasattr(self.swanlab, 'get_run') or self.swanlab.get_run() is None:
-                self.swanlab.init(
-                    project=self.project,
-                    experiment_name=self.experiment_name,
-                    description=self.description,
-                    config={
-                        "tags": ["vqvae", "anime", "baseline"]
-                    }
-                )
+            # 先尝试获取现有的 run，如果存在则直接使用
+            try:
+                existing_run = self.swanlab.get_run()
+                if existing_run is not None:
+                    self.swanlab_initialized = True
+                    print("[SwanLabCallback] 检测到现有的 SwanLab run，将直接使用。")
+                    return
+            except Exception:
+                # get_run() 可能不存在或抛出异常，继续初始化新的
+                pass
+            
+            # 如果没有现有的 run，则初始化新的
+            self.swanlab.init(
+                project=self.project,
+                experiment_name=self.experiment_name,
+                description=self.description,
+                config={
+                    "tags": ["vqvae", "anime", "baseline"]
+                },
+                mode=self.mode  # "cloud" 或 "local"
+            )
             
             self.swanlab_initialized = True
-            print("[SwanLabCallback] SwanLab 已初始化，将记录训练/验证/测试图像。")
+            print(f"[SwanLabCallback] SwanLab 已初始化（模式：{self.mode}），将记录训练/验证/测试图像。")
+        except RuntimeError as e:
+            # 处理 "Only one live display may be active at once" 错误
+            if "Only one live display" in str(e) or "already exists" in str(e):
+                print("[SwanLabCallback] 检测到 SwanLab 已在运行中，尝试重用现有 instance...")
+                self.swanlab_initialized = True
+                try:
+                    # 尝试获取现有的 run
+                    existing_run = self.swanlab.get_run()
+                    if existing_run is not None:
+                        print("[SwanLabCallback] 成功获取现有的 SwanLab run！")
+                        return
+                except Exception:
+                    pass
+
+                # 即使获取失败也标记为已初始化，避免反复尝试
+            else:
+                print(f"[SwanLabCallback] 初始化 SwanLab 失败: {e}")
+                self.swanlab_available = False
         except Exception as e:
             print(f"[SwanLabCallback] 初始化 SwanLab 失败: {e}")
             self.swanlab_available = False
@@ -157,6 +195,8 @@ class SwanLabCallback(Callback):
 
         # 关闭图像，防止内存泄露
         plt.close(fig)
+        plt.close('all')  # 确保所有图表都被关闭
+        gc.collect()  # 强制垃圾回收
 
     # ------------------------------------------------------------------
     # Lightning 回调
@@ -285,6 +325,54 @@ class SwanLabCallback(Callback):
             print("[SwanLabCallback] 训练结束。")
 
 
+class GPUMemoryCleaner(Callback):
+    """GPU 显存清理 Callback - 在每个 epoch 结束后主动释放显存
+    
+    这对于长时间训练很重要，可以避免显存碎片化和泄漏导致的 OOM。
+    """
+    
+    def __init__(self, clean_on_epoch_end: bool = True, clean_on_validation_end: bool = True):
+        """
+        Args:
+            clean_on_epoch_end: 是否在每个 epoch 结束后清理
+            clean_on_validation_end: 是否在每个验证结束后清理
+        """
+        super().__init__()
+        self.clean_on_epoch_end = clean_on_epoch_end
+        self.clean_on_validation_end = clean_on_validation_end
+    
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
+        """训练 epoch 结束时清理显存"""
+        if self.clean_on_epoch_end:
+            self._clear_gpu_memory()
+    
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
+        """验证 epoch 结束时清理显存"""
+        if self.clean_on_validation_end:
+            self._clear_gpu_memory()
+    
+    def _clear_gpu_memory(self):
+        """清理 GPU 显存"""
+        try:
+            # 清理 Python 垃圾
+            gc.collect()
+            
+            # 清理 PyTorch 缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+                # 获取并打印显存使用情况（可选）
+                allocated = torch.cuda.memory_allocated() / 1024 / 1024 / 1024  # GB
+                reserved = torch.cuda.memory_reserved() / 1024 / 1024 / 1024   # GB
+                print(f"[GPUMemoryCleaner] GPU 显存 - 已分配: {allocated:.2f}GB, 已预留: {reserved:.2f}GB")
+        except Exception as e:
+            print(f"[GPUMemoryCleaner] 清理显存时出错: {e}")
+
+
 if __name__ == "__main__":
     cb = SwanLabCallback()
     print("SwanLabCallback 加载成功，swanlab_available =", cb.swanlab_available)
+    
+    cleaner = GPUMemoryCleaner()
+    print("GPUMemoryCleaner 加载成功")

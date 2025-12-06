@@ -49,6 +49,12 @@ trainer:
         project: vq-vae-anime
         experiment_name: vqvae-baseline
         description: VQ-VAE baseline experiment on anime faces
+        enabled: true              # 设为 false 可完全禁用 SwanLab
+        mode: cloud                # "cloud" 上传到云端，"local" 只保存本地
+    - class_path: callback.MyCallback.GPUMemoryCleaner
+      init_args:
+        clean_on_epoch_end: true
+        clean_on_validation_end: true
   # 注意：不使用 SwanLabLogger，改用 SwanLabCallback 直接管理 SwanLab
   # 这避免了 DataPorter 被多次初始化的问题
   # logger:
