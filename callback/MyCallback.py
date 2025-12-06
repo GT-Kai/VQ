@@ -17,64 +17,76 @@ except ImportError:
 
 
 class SwanLabCallback(Callback):
-    """专为 VQVAEModel 定制的 SwanLab 图像回调（使用 Matplotlib 记录）"""
+    """专为 VQVAEModel 定制的 SwanLab 图像回调（使用 Matplotlib 记录）
+    
+    注意：此 callback 会在 on_train_start 时手动调用 swanlab.init()，
+    避免通过 SwanLabLogger 导致 DataPorter 被重复初始化。
+    """
 
     def __init__(
         self,
         log_images_every_n_steps: int = 500,
         log_images_every_n_epochs: int = 1,
         n_samples: int = 8,
+        project: str = "vq-vae-anime",
+        experiment_name: str = "vqvae-baseline",
+        description: str = "VQ-VAE baseline experiment on anime faces",
     ):
         """
         Args:
             log_images_every_n_steps: 训练时每隔多少步记录一次图像
             log_images_every_n_epochs: 验证/测试时每隔多少个 epoch 记录一次图像
             n_samples: 每次记录的样本数（原图 + 重建图 各 n_samples）
+            project: SwanLab 项目名称
+            experiment_name: SwanLab 实验名称
+            description: SwanLab 实验描述
         """
         super().__init__()
         self.log_images_every_n_steps = log_images_every_n_steps
         self.log_images_every_n_epochs = log_images_every_n_epochs
         self.n_samples = n_samples
-
+        
+        # SwanLab 配置
+        self.project = project
+        self.experiment_name = experiment_name
+        self.description = description
+        
         self.swanlab = swanlab
         self.swanlab_available = SWANLAB_AVAILABLE
+        self.swanlab_initialized = False
 
         if not self.swanlab_available:
             print("[SwanLabCallback] 未检测到 swanlab 包，图像记录将被跳过。")
 
     # ------------------------------------------------------------------
-    # 工具：判断是否在用 SwanLabLogger
+    # 工具：初始化 SwanLab（仅一次）
     # ------------------------------------------------------------------
-    def _is_swanlab_logger(self, logger) -> bool:
-        """检查是否为 SwanLabLogger（不依赖具体 Lightning 版本的类型）"""
-        if logger is None:
-            return False
-
-        # 单个 logger
-        name = type(logger).__name__
-        if name == "SwanLabLogger" or "swanlab" in name.lower():
-            return True
-
-        # 可能是 logger 集合（logger.loggers / logger_iterable / _logger_iterable）
-        candidates = []
-
-        for attr in ("logger_iterable", "_logger_iterable", "loggers"):
-            if hasattr(logger, attr):
-                candidates = getattr(logger, attr)
-                break
-
-        if not candidates:
-            try:
-                candidates = list(logger)
-            except TypeError:
-                candidates = []
-
-        for lg in candidates:
-            lg_name = type(lg).__name__
-            if lg_name == "SwanLabLogger" or "swanlab" in lg_name.lower():
-                return True
-
-        return False
+    def _ensure_swanlab_initialized(self):
+        """确保 SwanLab 被正确初始化（仅初始化一次）"""
+        if not self.swanlab_available:
+            return
+        
+        if self.swanlab_initialized:
+            return
+        
+        try:
+            # 检查是否已有活跃的 swanlab run
+            # 如果没有，则初始化一个新的
+            if not hasattr(self.swanlab, 'get_run') or self.swanlab.get_run() is None:
+                self.swanlab.init(
+                    project=self.project,
+                    experiment_name=self.experiment_name,
+                    description=self.description,
+                    config={
+                        "tags": ["vqvae", "anime", "baseline"]
+                    }
+                )
+            
+            self.swanlab_initialized = True
+            print("[SwanLabCallback] SwanLab 已初始化，将记录训练/验证/测试图像。")
+        except Exception as e:
+            print(f"[SwanLabCallback] 初始化 SwanLab 失败: {e}")
+            self.swanlab_available = False
 
     # ------------------------------------------------------------------
     # 核心：用 Matplotlib 画原图 + 重建图，并用 swanlab.Image(plt) 记录
@@ -150,8 +162,10 @@ class SwanLabCallback(Callback):
     # Lightning 回调
     # ------------------------------------------------------------------
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
-        if self.swanlab_available and self._is_swanlab_logger(trainer.logger):
-            print("[SwanLabCallback] SwanLab 回调已启用，将记录训练/验证/测试图像。")
+        """训练开始时初始化 SwanLab"""
+        if self.swanlab_available:
+            self._ensure_swanlab_initialized()
+            print("[SwanLabCallback] 训练开始，SwanLab 已就绪。")
 
     def on_train_batch_end(
         self,
@@ -165,7 +179,7 @@ class SwanLabCallback(Callback):
         训练阶段：每隔 log_images_every_n_steps 重新跑一遍 forward，
         拿到 (x_recon, info)，画 Matplotlib 图。
         """
-        if not (self.swanlab_available and self._is_swanlab_logger(trainer.logger)):
+        if not self.swanlab_available:
             return
 
         if self.log_images_every_n_steps <= 0:
@@ -229,7 +243,7 @@ class SwanLabCallback(Callback):
     # ---------------------- 验证 / 测试 回调 ----------------------
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
         """每隔若干个 epoch 在验证集上记录一次重建图像"""
-        if not (self.swanlab_available and self._is_swanlab_logger(trainer.logger)):
+        if not self.swanlab_available:
             return
 
         if self.log_images_every_n_epochs <= 0:
@@ -250,7 +264,7 @@ class SwanLabCallback(Callback):
 
     def on_test_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
         """在测试集上记录一次重建图像"""
-        if not (self.swanlab_available and self._is_swanlab_logger(trainer.logger)):
+        if not self.swanlab_available:
             return
 
         if not hasattr(trainer, "datamodule") or trainer.datamodule is None:
@@ -260,8 +274,15 @@ class SwanLabCallback(Callback):
         self._log_epoch_images_from_loader(trainer, pl_module, test_loader, key_prefix="test")
 
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
-        if self.swanlab_available and self._is_swanlab_logger(trainer.logger):
-            print("[SwanLabCallback] 训练结束，已尝试将重建图像记录到 SwanLab。")
+        """训练结束时清理"""
+        if self.swanlab_available and self.swanlab_initialized:
+            try:
+                # 确保 SwanLab run 被正确关闭
+                if hasattr(self.swanlab, 'finish'):
+                    self.swanlab.finish()
+            except Exception as e:
+                print(f"[SwanLabCallback] 关闭 SwanLab 时出错: {e}")
+            print("[SwanLabCallback] 训练结束。")
 
 
 if __name__ == "__main__":

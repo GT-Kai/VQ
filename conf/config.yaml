@@ -46,17 +46,22 @@ trainer:
         log_images_every_n_steps: 500
         log_images_every_n_epochs: 1
         n_samples: 8
-  logger:
-    - class_path: swanlab.integration.pytorch_lightning.SwanLabLogger
-      init_args:
         project: vq-vae-anime
         experiment_name: vqvae-baseline
         description: VQ-VAE baseline experiment on anime faces
-        config:
-          tags:
-            - vqvae
-            - anime
-            - baseline
+  # 注意：不使用 SwanLabLogger，改用 SwanLabCallback 直接管理 SwanLab
+  # 这避免了 DataPorter 被多次初始化的问题
+  # logger:
+  #   - class_path: swanlab.integration.pytorch_lightning.SwanLabLogger
+  #     init_args:
+  #       project: vq-vae-anime
+  #       experiment_name: vqvae-baseline
+  #       description: VQ-VAE baseline experiment on anime faces
+  #       config:
+  #         tags:
+  #           - vqvae
+  #           - anime
+  #           - baseline
 
 # Model configuration
 model:
