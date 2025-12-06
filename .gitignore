@@ -8,3 +8,4 @@ checkpoints/*
 callback/MNIST/*
 callback/checkpoint/*
 bash/*
+lightning_logs/version_0/*
