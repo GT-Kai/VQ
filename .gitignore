@@ -7,5 +7,5 @@ model/__pycache__/*
 checkpoints/*
 callback/MNIST/*
 callback/checkpoint/*
-bash/*
+bash/run_.sh
 lightning_logs/*
