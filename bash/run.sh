@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 # 验证配置（不实际训练）
 # python main.py fit --config conf/config.yaml --print_config
 

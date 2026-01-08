@@ -8,13 +8,10 @@ import gc
 import matplotlib.pyplot as plt
 
 
-# 尝试导入 swanlab
-try:
-    import swanlab  # type: ignore
-    SWANLAB_AVAILABLE = True
-except ImportError:
-    swanlab = None  # type: ignore
-    SWANLAB_AVAILABLE = False
+
+import swanlab  # type: ignore
+SWANLAB_AVAILABLE = True
+
 
 
 class SwanLabCallback(Callback):
@@ -62,69 +59,27 @@ class SwanLabCallback(Callback):
         self.swanlab_available = SWANLAB_AVAILABLE and self.enabled
         self.swanlab_initialized = False
 
-        if not self.swanlab_available:
-            if not self.enabled:
-                print("[SwanLabCallback] SwanLab 已禁用。")
-            else:
-                print("[SwanLabCallback] 未检测到 swanlab 包，图像记录将被跳过。")
-
     # ------------------------------------------------------------------
     # 工具：初始化 SwanLab（仅一次）
     # ------------------------------------------------------------------
     def _ensure_swanlab_initialized(self):
         """确保 SwanLab 被正确初始化（仅初始化一次）"""
-        if not self.swanlab_available:
-            return
-        
-        if self.swanlab_initialized:
-            return
-        
-        try:
-            # 先尝试获取现有的 run，如果存在则直接使用
-            try:
-                existing_run = self.swanlab.get_run()
-                if existing_run is not None:
-                    self.swanlab_initialized = True
-                    print("[SwanLabCallback] 检测到现有的 SwanLab run，将直接使用。")
-                    return
-            except Exception:
-                # get_run() 可能不存在或抛出异常，继续初始化新的
-                pass
-            
-            # 如果没有现有的 run，则初始化新的
-            self.swanlab.init(
-                project=self.project,
-                experiment_name=self.experiment_name,
-                description=self.description,
-                config={
-                    "tags": ["vqvae", "anime", "baseline"]
-                },
-                mode=self.mode  # "cloud" 或 "local"
-            )
-            
+        existing_run = self.swanlab.get_run()
+        if existing_run is not None:
             self.swanlab_initialized = True
-            print(f"[SwanLabCallback] SwanLab 已初始化（模式：{self.mode}），将记录训练/验证/测试图像。")
-        except RuntimeError as e:
-            # 处理 "Only one live display may be active at once" 错误
-            if "Only one live display" in str(e) or "already exists" in str(e):
-                print("[SwanLabCallback] 检测到 SwanLab 已在运行中，尝试重用现有 instance...")
-                self.swanlab_initialized = True
-                try:
-                    # 尝试获取现有的 run
-                    existing_run = self.swanlab.get_run()
-                    if existing_run is not None:
-                        print("[SwanLabCallback] 成功获取现有的 SwanLab run！")
-                        return
-                except Exception:
-                    pass
+            print("[SwanLabCallback] 检测到现有的 SwanLab run，将直接使用。")
+            return
 
-                # 即使获取失败也标记为已初始化，避免反复尝试
-            else:
-                print(f"[SwanLabCallback] 初始化 SwanLab 失败: {e}")
-                self.swanlab_available = False
-        except Exception as e:
-            print(f"[SwanLabCallback] 初始化 SwanLab 失败: {e}")
-            self.swanlab_available = False
+        # 如果没有现有的 run，则初始化新的
+        self.swanlab.init(
+            project=self.project,
+            experiment_name=self.experiment_name,
+            description=self.description,
+            config={
+                "tags": ["vqvae", "anime", "baseline"]
+            },
+            mode=self.mode  # "cloud" 或 "local"
+        )
 
     # ------------------------------------------------------------------
     # 核心：用 Matplotlib 画原图 + 重建图，并用 swanlab.Image(plt) 记录
@@ -192,6 +147,7 @@ class SwanLabCallback(Callback):
         # 关键：用 Matplotlib 的 plt 对象创建 swanlab.Image
         img_obj = self.swanlab.Image(plt)
         self.swanlab.log({key: img_obj}, step=step)
+        print(f"[SwanLabCallback] 成功记录 {key} 到 SwanLab")
 
         # 关闭图像，防止内存泄露
         plt.close(fig)
